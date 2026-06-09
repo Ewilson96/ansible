@@ -1,0 +1,96 @@
+# ----------------------------------------------------------------------------------------------
+# Linux Patch Management Playbook
+#
+# Objective:
+# Automate Linux patch management across RHEL/Alma/Rocky/Ubuntu hosts 
+# with pre-check validation, safe package updates, reboot handling, 
+# post-patch health checks, and centralized reporting.
+# ----------------------------------------------------------------------------------------------
+
+---
+- name: Ansible Patch Management
+  hosts: all
+  gather_facts: true
+
+  tasks:
+
+    - name: ping check
+      ping:
+      register: ping_result
+      failed_when: ping_result.ping != "pong"
+
+    - name: Get OS Info
+      shell: uname -r 
+      register: server_os
+      changed_when: false
+
+    - name: Get Users
+      shell: "getent passwd | cut -d: -f1"
+      register: users_list
+      changed_when: false
+
+    - name: Get Active Users
+      shell: w -h | awk '{print $1}' | sort -u
+      register: active_users
+      changed_when: false
+
+    - name: Get disk space
+      shell: df -h /
+      register: disk_space
+      changed_when: false
+
+    - name: Display Status
+      debug: 
+        msg: >
+          {{ inventory_hostname.upper() }} OS detail is {{ server_os.stdout }}
+            DISk_SPACE={{ disk_space }}
+            USERS={{ users_list.stdout_lines | join(', ') }}
+            ACTIVE_USERS={{ active_users.stdout_lines | join(', ')}}
+
+    - name:  update cache and upgrade packages
+      become: true
+      apt:
+        name: "*"
+        state: latest
+        update_cache: yes
+        force_apt_get: yes
+      register: update_cmds
+      timeout: 150
+      when: ansible_facts["os_family"] == "Debian"
+      tags: apt_repair
+      
+    - name: Report APT package maintenance results
+      debug:
+        var: update_cmds.stdout_lines 
+      when: ansible_facts["os_family"] == "Debian"     
+
+    - name: Refresh DNF package metadata
+      shell: dnf makecache
+      become: true
+      changed_when: false
+      register: dnf_cache_update
+      timeout: 300
+      when: ansible_facts["os_family"] == "RedHat"
+      tags:
+        - dnf_repair
+
+    - name: Upgrade all DNF packages
+      shell: dnf upgrade -y
+      become: true
+      changed_when: false
+      register: dnf_upgrade
+      timeout: 900
+      when: ansible_facts["os_family"] == "RedHat"
+      tags:
+        - dnf_repair
+
+    - name: Report DNF package maintenance results
+      debug:
+        msg: |
+          DNF_CACHE_UPDATE: {{ dnf_cache_update.stdout_lines | join(', ') }}
+          DNF_UPGRADE: {{ dnf_upgrade.stdout_lines | join(', ') }}
+      when: ansible_facts["os_family"] == "RedHat"
+      tags:
+        - dnf_repair
+
+      

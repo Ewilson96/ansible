@@ -12,6 +12,10 @@
   hosts: all
   gather_facts: true
 
+  vars:
+    min_disk_free_mb: 5120
+   # max_load_threshold: "{{ ansible_facts['processor_vcpus'] }}"
+
   tasks:
 
     - name: ping check
@@ -34,18 +38,80 @@
       register: active_users
       changed_when: false
 
-    - name: Get disk space
-      shell: df -h /
-      register: disk_space
+    - name: Get disk space on root partition
+      shell: df --output=avail -m / | tail -1 | tr -d ' '
+      register: disk_free_mb
       changed_when: false
 
+    - name: Check system's CPU load average
+      shell: awk '{print $1}' /proc/loadavg
+      register: load_avg
+      changed_when: false
+
+    - name: Set dynamic CPU load threshold
+      set_fact:
+        max_load_threshold: "{{ ansible_facts['processor_vcpus'] | float }}"
+      
+    - name: Warn if CPU's load average is high
+      debug:
+        msg: >
+          WARNING: {{ inventory_hostname }} has a 1-min CPU load of {{ load_avg.stdout }},
+          which exceeds threshold {{ max_load_threshold }}. Proceeding with caution.
+      when: load_avg.stdout | float > max_load_threshold | float
+
+    - name: Abort if disk space is insufficient
+      fail:
+        msg: >
+          {{ inventory_hostname }}: Only {{ disk_free_mb.stdout }} Mb free on /.
+          Minimum required: {{ min_disk_free_mb }} Mb. Aborting patch run.
+      when: disk_free_mb.stdout | int < min_disk_free_mb | int
+  
     - name: Display Status
       debug: 
         msg: >
           {{ inventory_hostname.upper() }} OS detail is {{ server_os.stdout }}
-            DISk_SPACE={{ disk_space }}
+            DISk_SPACE={{ disk_free_mb.stdout }} Mb
             USERS={{ users_list.stdout_lines | join(', ') }}
             ACTIVE_USERS={{ active_users.stdout_lines | join(', ')}}
+
+    - name: Synchronize system time
+      become: true
+      shell: |
+        chronyc makestep
+        hwclock --systohc
+        timedatectl
+      register: time_sync
+      changed_when: false
+      # when:
+      #   - inventory_hostname in ["ubuntu", "pve"]
+      tags: time_sync
+
+    # - name: Test Debian APT update after time fix
+    #   become: true
+    #   shell: apt-get update
+    #   register: debian_apt_test
+    #   changed_when: false
+    #   failed_when: false
+    #   timeout: 300
+    #   when:
+    #     - inventory_hostname in ["ubuntu", "pve"]
+    #   tags:
+    #     - debian_time_fix
+
+    - name: Report time synchronization results
+      debug:
+        msg: |
+          HOST={{ inventory_hostname.upper() }}
+          TIME_SYNC_FAILED={{ time_sync.failed | default(false) }}
+          TIME_SYNC_RC={{ time_sync.rc | default('N/A') }}
+
+          TIME_SYNC_OUTPUT:
+          {{ time_sync.stdout_lines | default([]) | join('\n') }}
+
+          TIME_SYNC_ERRORS:
+          {{ time_sync.stderr_lines | default([]) | join('\n') }}
+      tags:
+        - time_sync 
 
     - name:  update cache and upgrade packages
       become: true
@@ -55,14 +121,36 @@
         update_cache: yes
         force_apt_get: yes
       register: update_cmds
-      timeout: 150
+      timeout: 300
+      ignore_errors: yes
       when: ansible_facts["os_family"] == "Debian"
       tags: apt_repair
-      
-    - name: Report APT package maintenance results
-      debug:
-        var: update_cmds.stdout_lines 
-      when: ansible_facts["os_family"] == "Debian"     
+
+    - name: Get package list on Debian hosts
+      shell: "dpkg-query -W -f='${binary:Package} ${Version}, '"
+      register: debian_packages
+      changed_when: false
+      when: ansible_facts["os_family"] == "Debian"
+
+    - name: Get package list on RedHat hosts
+      shell: "rpm -qa | paste -sd','"
+      register: redhat_packages
+      changed_when: false
+      when: ansible_facts["os_family"] == "RedHat" 
+
+    # - name: Show Debian packages
+    #   debug:
+    #     msg: >
+    #       {{ inventory_hostname.upper() }} package list:
+    #       {{ debian_packages.stdout_lines | join(', ') }}
+    #   when: ansible_facts["os_family"] == "Debian"
+
+    # - name: Show RedHat packages
+    #   debug:
+    #     msg: >
+    #       {{ inventory_hostname.upper() }} package list:
+    #       {{ redhat_packages.stdout_lines | join(', ') }}
+    #   when: ansible_facts["os_family"] == "RedHat"
 
     - name: Refresh DNF package metadata
       shell: dnf makecache
@@ -79,10 +167,15 @@
       become: true
       changed_when: false
       register: dnf_upgrade
-      timeout: 900
+      timeout: 500
       when: ansible_facts["os_family"] == "RedHat"
       tags:
         - dnf_repair
+
+    - name: Report APT package maintenance results
+      debug:
+        var: update_cmds.stdout_lines 
+      when: ansible_facts["os_family"] == "Debian"  
 
     - name: Report DNF package maintenance results
       debug:
@@ -92,5 +185,3 @@
       when: ansible_facts["os_family"] == "RedHat"
       tags:
         - dnf_repair
-
-      

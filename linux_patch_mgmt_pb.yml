@@ -1,11 +1,11 @@
-# ----------------------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------                                                                             ----------------
 # Linux Patch Management Playbook
 #
 # Objective:
-# Automate Linux patch management across RHEL/Alma/Rocky/Ubuntu hosts 
-# with pre-check validation, safe package updates, reboot handling, 
+# Automate Linux patch management across RHEL/Alma/Rocky/Ubuntu hosts
+# with pre-check validation, safe package updates, reboot handling,
 # post-patch health checks, and centralized reporting.
-# ----------------------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------                                                                             ----------------
 
 ---
 - name: Ansible Patch Management
@@ -14,7 +14,6 @@
 
   vars:
     min_disk_free_mb: 5120
-   # max_load_threshold: "{{ ansible_facts['processor_vcpus'] }}"
 
   tasks:
 
@@ -24,7 +23,7 @@
       failed_when: ping_result.ping != "pong"
 
     - name: Get OS Info
-      shell: uname -r 
+      shell: uname -r
       register: server_os
       changed_when: false
 
@@ -51,12 +50,12 @@
     - name: Set dynamic CPU load threshold
       set_fact:
         max_load_threshold: "{{ ansible_facts['processor_vcpus'] | float }}"
-      
+
     - name: Warn if CPU's load average is high
       debug:
         msg: >
-          WARNING: {{ inventory_hostname }} has a 1-min CPU load of {{ load_avg.stdout }},
-          which exceeds threshold {{ max_load_threshold }}. Proceeding with caution.
+          WARNING: {{ inventory_hostname }} has a 1-min CPU load of {{ load_avg.                                                                             stdout }},
+          which exceeds threshold {{ max_load_threshold }}. Proceeding with caut                                                                             ion.
       when: load_avg.stdout | float > max_load_threshold | float
 
     - name: Abort if disk space is insufficient
@@ -65,9 +64,9 @@
           {{ inventory_hostname }}: Only {{ disk_free_mb.stdout }} Mb free on /.
           Minimum required: {{ min_disk_free_mb }} Mb. Aborting patch run.
       when: disk_free_mb.stdout | int < min_disk_free_mb | int
-  
+
     - name: Display Status
-      debug: 
+      debug:
         msg: >
           {{ inventory_hostname.upper() }} OS detail is {{ server_os.stdout }}
             DISk_SPACE={{ disk_free_mb.stdout }} Mb
@@ -82,21 +81,7 @@
         timedatectl
       register: time_sync
       changed_when: false
-      # when:
-      #   - inventory_hostname in ["ubuntu", "pve"]
       tags: time_sync
-
-    # - name: Test Debian APT update after time fix
-    #   become: true
-    #   shell: apt-get update
-    #   register: debian_apt_test
-    #   changed_when: false
-    #   failed_when: false
-    #   timeout: 300
-    #   when:
-    #     - inventory_hostname in ["ubuntu", "pve"]
-    #   tags:
-    #     - debian_time_fix
 
     - name: Report time synchronization results
       debug:
@@ -110,10 +95,9 @@
 
           TIME_SYNC_ERRORS:
           {{ time_sync.stderr_lines | default([]) | join('\n') }}
-      tags:
-        - time_sync 
+      tags: time_sync
 
-    - name:  update cache and upgrade packages
+    - name: Update cache and upgrade packages
       become: true
       apt:
         name: "*"
@@ -126,6 +110,15 @@
       when: ansible_facts["os_family"] == "Debian"
       tags: apt_repair
 
+    - name: Check and refresh Ubuntu's SNAP packages
+      become: true
+      shell: snap refresh
+      register: snap_update_cmds
+      timeout: 300
+      ignore_errors: yes
+      when: ansible_facts["distribution"] == "Ubuntu"
+      tags: snap_repair
+
     - name: Get package list on Debian hosts
       shell: "dpkg-query -W -f='${binary:Package} ${Version}, '"
       register: debian_packages
@@ -136,21 +129,7 @@
       shell: "rpm -qa | paste -sd','"
       register: redhat_packages
       changed_when: false
-      when: ansible_facts["os_family"] == "RedHat" 
-
-    # - name: Show Debian packages
-    #   debug:
-    #     msg: >
-    #       {{ inventory_hostname.upper() }} package list:
-    #       {{ debian_packages.stdout_lines | join(', ') }}
-    #   when: ansible_facts["os_family"] == "Debian"
-
-    # - name: Show RedHat packages
-    #   debug:
-    #     msg: >
-    #       {{ inventory_hostname.upper() }} package list:
-    #       {{ redhat_packages.stdout_lines | join(', ') }}
-    #   when: ansible_facts["os_family"] == "RedHat"
+      when: ansible_facts["os_family"] == "RedHat"
 
     - name: Refresh DNF package metadata
       shell: dnf makecache
@@ -159,8 +138,7 @@
       register: dnf_cache_update
       timeout: 300
       when: ansible_facts["os_family"] == "RedHat"
-      tags:
-        - dnf_repair
+      tags: dnf_repair
 
     - name: Upgrade all DNF packages
       shell: dnf upgrade -y
@@ -169,13 +147,12 @@
       register: dnf_upgrade
       timeout: 500
       when: ansible_facts["os_family"] == "RedHat"
-      tags:
-        - dnf_repair
+      tags: dnf_repair
 
     - name: Report APT package maintenance results
       debug:
-        var: update_cmds.stdout_lines 
-      when: ansible_facts["os_family"] == "Debian"  
+        var: update_cmds.stdout_lines
+      when: ansible_facts["os_family"] == "Debian"
 
     - name: Report DNF package maintenance results
       debug:
@@ -183,5 +160,4 @@
           DNF_CACHE_UPDATE: {{ dnf_cache_update.stdout_lines | join(', ') }}
           DNF_UPGRADE: {{ dnf_upgrade.stdout_lines | join(', ') }}
       when: ansible_facts["os_family"] == "RedHat"
-      tags:
-        - dnf_repair
+      tags: dnf_repair
